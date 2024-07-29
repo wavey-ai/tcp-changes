@@ -8,9 +8,9 @@ edition = "2021"
 [dependencies]
 tracing = "0.1.40"
 bytes = "1.6.0"
-tcp-tls = { path = "../tcp-tls/" }
 tokio = { version = "1.35.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 crc32fast = "1.4.2"
 tokio-rustls = "0.26.0"
 rustls = "0.23.12"
+tls-helpers = "0.1.0"

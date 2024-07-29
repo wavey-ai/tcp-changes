@@ -742,23 +742,11 @@ dependencies = [
  "bytes",
  "crc32fast",
  "rustls 0.23.12",
- "tcp-tls",
+ "tls-helpers",
  "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "tcp-tls"
-version = "0.1.0"
-dependencies = [
- "base64",
- "rustls 0.21.12",
- "rustls-pemfile",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -769,6 +757,20 @@ checksum = "8b9ef9bad013ada3808854ceac7b46812a6465ba368859a37e2100283d2d719c"
 dependencies = [
  "cfg-if",
  "once_cell",
+]
+
+[[package]]
+name = "tls-helpers"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69d692cc014c798be3148dffb0399d0d0234cf150279d71581e5d54b51ee24c1"
+dependencies = [
+ "base64",
+ "rustls 0.21.12",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
