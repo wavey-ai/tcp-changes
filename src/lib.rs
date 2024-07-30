@@ -16,7 +16,6 @@ use tracing::{debug, error, info, warn};
 pub struct Payload {
     tag: String,
     val: Bytes,
-    chk: Bytes,
 }
 
 pub struct Client {
@@ -88,11 +87,9 @@ impl Client {
                                     if let Some(len) = current_frame_length {
                                         if buffer.len() >= len {
                                             let tag = buffer.split_to(4);
-                                            let chk = buffer.split_to(4);
-                                            let val = buffer.split_to(len - 8);
+                                            let val = buffer.split_to(len - 4);
                                             let pkt = Payload {
                                                 tag: std::str::from_utf8(&tag).unwrap_or("invalid").to_string(),
-                                                chk: chk.freeze(),
                                                 val: val.freeze(),
                                             };
 
@@ -137,11 +134,11 @@ pub struct Server {
 
 impl Server {
     pub fn new(cert_pem: String, privkey_pem: String) -> Self {
-        let (sender, mut rx) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(16);
 
         Self {
             streams: Arc::new(RwLock::new(BTreeMap::new())),
-            changes: Arc::new(sender),
+            changes: Arc::new(tx),
             cert_pem,
             privkey_pem,
         }
@@ -195,27 +192,26 @@ impl Server {
         self.streams.write().unwrap().remove(&id);
     }
 
-    pub fn add(&self, id: u64, tag: &[u8], data: Bytes) {
-        let checksum = Self::calculate_checksum(&data);
-        let packet_size = 4 + 4 + data.len() as u32; // Calculate total size
-        let mut packet = BytesMut::with_capacity(4 + packet_size as usize);
-        packet.put_u32(packet_size);
-        packet.put_slice(tag);
-        packet.put_u32(checksum);
-        packet.put(data.clone()); // clone data here for debugging
-        self.send(id, packet.freeze());
+    pub fn add(&self, id: u64, tag: &[u8], data: Vec<Bytes>) {
+        let mut packet_size = 4;
+        for d in &data {
+            packet_size += d.len();
+        }
 
-        // Debugging: Show packet details
-        debug!(
-            "Added packet for id {}: tag: {:?}, checksum: {}, data: {:?}",
-            id, tag, checksum, data
-        );
-    }
+        {
+            let mut packet = BytesMut::with_capacity(4);
+            packet.put_u32(packet_size as u32);
+            self.send(id, packet.freeze())
+        }
+        {
+            let mut packet = BytesMut::with_capacity(4);
+            packet.put_slice(tag);
+            self.send(id, packet.freeze())
+        }
 
-    fn calculate_checksum(data: &Bytes) -> u32 {
-        let mut hasher = Hasher::new();
-        hasher.update(data);
-        hasher.finalize()
+        for d in data {
+            self.send(id, d);
+        }
     }
 
     pub async fn start(
@@ -407,7 +403,7 @@ mod tests {
         let addr: SocketAddr = ([0, 0, 0, 0], 4243).into();
         let (up, fin, shutdown) = mq.start(addr).await.unwrap();
         up.await.unwrap();
-        mq.add(1, b"abcd", Bytes::from("foo"));
+        mq.add(1, b"abcd", vec![Bytes::from("foo")]);
 
         let mb = Client::new("local.wavey.io".to_string(), addr, ca_cert);
         let (mb_up, mb_fin, mb_shutdown, mut rx) = mb.start(1).await.unwrap();
@@ -418,7 +414,7 @@ mod tests {
         let test_cases = vec![(b"abcd", "foo"), (b"efgh", "bar"), (b"abcd", "baz")];
 
         for (tag, val) in test_cases.into_iter() {
-            mq.add(1, tag, Bytes::from(val));
+            mq.add(1, tag, vec![Bytes::from(val)]);
             sleep(Duration::from_millis(10)).await;
 
             let payload = rx.try_recv().expect("expected data on channel");
