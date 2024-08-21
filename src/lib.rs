@@ -1,27 +1,34 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rustls::pki_types::ServerName;
-use std::collections::BTreeMap;
+use std::fmt;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::str;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tls_helpers::{tls_acceptor_from_base64, tls_connector_from_base64};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
-use tokio::time::Duration;
 use tokio_rustls::server;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    tag: String,
+    tag: [u8; 4],
     data: Vec<Bytes>,
+    timestamp: u64,
 }
 
 impl Message {
-    pub fn new(tag: String, data: Vec<Bytes>) -> Self {
-        Message { tag, data }
+    pub fn new(tag: [u8; 4], data: Vec<Bytes>) -> Self {
+        Message {
+            tag,
+            data,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        }
     }
 
     pub async fn send(&self, chan: mpsc::Sender<Message>) {
@@ -29,10 +36,29 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Payload {
-    tag: String,
-    val: Bytes,
-    ipv4: Ipv4Addr,
+    pub tag: [u8; 4],
+    pub val: Bytes,
+}
+
+impl fmt::Display for Payload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Convert tag to a readable ASCII string, safely handling non-ASCII bytes
+        let tag_string = self
+            .tag
+            .iter()
+            .map(|&c| if c.is_ascii() { c as char } else { '.' })
+            .collect::<String>();
+
+        // Attempt to convert `val` to a UTF-8 string, if possible
+        let val_string = match str::from_utf8(&self.val) {
+            Ok(v) => v.to_string(),              // Convert to string if it's valid UTF-8
+            Err(_) => format!("{:?}", self.val), // Use debug print if not valid UTF-8
+        };
+
+        write!(f, "Tag: {}, Value: {}", tag_string, val_string)
+    }
 }
 
 pub struct Client {
@@ -65,7 +91,9 @@ impl Client {
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(16);
         let (up_tx, up_rx) = oneshot::channel();
         let (fin_tx, fin_rx) = oneshot::channel();
-        let (tx, mut rx) = mpsc::channel::<Payload>(64);
+        let (tx, rx) = mpsc::channel::<Payload>(16);
+
+        let tx_clone = tx.clone();
 
         let connector = tls_connector_from_base64(&self.ca_cert_pem).unwrap();
         let stream = TcpStream::connect(self.addr).await?;
@@ -76,7 +104,7 @@ impl Client {
         stream.write_all(&cmd.as_bytes()).await?;
 
         let srv = async move {
-            up_tx.send(()).unwrap();
+            up_tx.send(());
 
             let mut buffer = BytesMut::with_capacity(1024);
             let mut current_frame_length: Option<usize> = None;
@@ -103,21 +131,19 @@ impl Client {
 
                                     if let Some(len) = current_frame_length {
                                         if buffer.len() >= len {
-                                            let mut ipv4_bytes = buffer.split_to(4);
-                                            let ipv4 = Ipv4Addr::from(ipv4_bytes.get_u32());
-                                            let tag = buffer.split_to(4);
-                                            let val = buffer.split_to(len - 8);
+                                            let tag_bytes = buffer.split_to(4);
+                                            let mut tag = [0u8; 4];
+                                            tag.copy_from_slice(&tag_bytes);
+
+                                            let val = buffer.split_to(len - 4);
                                             let pkt = Payload {
-                                                ipv4,
-                                                tag: std::str::from_utf8(&tag).unwrap_or("invalid").to_string(),
+                                                tag,
                                                 val: val.freeze(),
                                             };
 
-                                            match tx.send(pkt).await {
-                                                Ok(_) => {},
-                                                Err(e) => {
-                                                    error!("Error sending frame to channel: {:?}", e);
-                                                }
+                                            if let Err(e) = tx_clone.send(pkt).await {
+                                                // this will error if there are no subscribers;
+                                                // error!("Broadcast error: {:?}", e);
                                             }
 
                                             current_frame_length = None;
@@ -182,7 +208,6 @@ impl Server {
         let incoming = TcpListener::bind(addr).await.unwrap();
         up_tx.send(()).unwrap();
 
-        let mut last = Arc::new(None);
         let priv_ip = self.priv_ipv4.clone();
         let srv = async move {
             loop {
@@ -192,11 +217,16 @@ impl Server {
                             Ok((stream, _)) => {
                                 let tls_acceptor = tls_acceptor.clone();
                                 let rx = btx.subscribe();
-                                let last_copy = Arc::clone(&last);
                                 let priv_ip = priv_ip.clone();
                                 tokio::task::spawn(async move {
-                                    let stream = tls_acceptor.accept(stream).await.unwrap();
-                                    stream_handler(stream, rx, last_copy, priv_ip.clone()).await;
+                                    match tls_acceptor.accept(stream).await {
+                                        Ok(stream) => {
+                                            stream_handler(stream, rx, priv_ip.clone()).await;
+                                        }
+                                        Err(err) => {
+                                           error!("tcp stream error: {:?}", err);
+                                        }
+                                    }
                                 });
                             }
                             Err(err) => {
@@ -209,7 +239,6 @@ impl Server {
                         break;
                     }
                     Some(message) = rx.recv() => {
-                        last = Arc::new(Some(message.clone()));
                         btx.send(message);
                     }
                 }
@@ -229,7 +258,6 @@ impl Server {
 async fn stream_handler(
     mut stream: server::TlsStream<TcpStream>,
     mut rx: broadcast::Receiver<Message>,
-    last: Arc<Option<Message>>,
     priv_ipv4: Ipv4Addr,
 ) {
     let mut buffer: [u8; 1024] = [0; 1024];
@@ -238,17 +266,33 @@ async fn stream_handler(
             if let Ok(command) = String::from_utf8(buffer[..n].to_vec()) {
                 let command = command.trim().to_string();
                 if command == "HELLO" {
-                    if let Some(msg) = last.as_ref().as_ref() {
-                        send_message(&mut stream, msg.clone(), priv_ipv4).await;
+                    let mut buf = BytesMut::with_capacity(4);
+                    buf.extend_from_slice(&priv_ipv4.octets());
+                    let data = buf.freeze();
+                    let tag = *b"myip";
+                    let message = Message::new(tag, vec![data]);
+
+                    if let Err(e) = send_message(&mut stream, message).await {
+                        error!("Failed to send message: {:?}", e);
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            info!("Broken pipe detected, closing stream handler.");
+                            return; // Exit the function to stop the loop
+                        }
                     }
+
                     loop {
                         match rx.recv().await {
                             Ok(message) => {
-                                send_message(&mut stream, message, priv_ipv4).await;
+                                if let Err(e) = send_message(&mut stream, message).await {
+                                    error!("Failed to send message: {:?}", e);
+                                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                        info!("Broken pipe detected, closing stream handler.");
+                                        break; // Break the loop on broken pipe error
+                                    }
+                                }
                             }
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 warn!("Broadcast channel lagged, skipped {} messages", skipped);
-                                // Continue listening instead of breaking
                             }
                             Err(broadcast::error::RecvError::Closed) => {
                                 info!("Broadcast channel closed");
@@ -268,12 +312,11 @@ async fn stream_handler(
 async fn send_message(
     stream: &mut server::TlsStream<TcpStream>,
     message: Message,
-    priv_ipv4: Ipv4Addr,
-) {
+) -> Result<(), std::io::Error> {
     let tag = message.tag;
     let data = message.data;
 
-    let mut packet_size = 8; // tag + ipv4
+    let mut packet_size = 4;
     for d in &data {
         packet_size += d.len();
     }
@@ -282,35 +325,28 @@ async fn send_message(
         let mut packet = BytesMut::with_capacity(4);
         packet.put_u32(packet_size as u32);
         if let Err(e) = stream.write_all(&packet.freeze()).await {
-            error!("Error sending initial changes: {:?}", e);
-            return;
+            error!("Error sending packet size: {:?}", e);
+            return Err(e); // Propagate the error
         }
     }
 
     {
         let mut packet = BytesMut::with_capacity(4);
-        packet.put_slice(&priv_ipv4.octets());
+        packet.put_slice(&tag);
         if let Err(e) = stream.write_all(&packet.freeze()).await {
-            error!("Error sending initial changes: {:?}", e);
-            return;
-        }
-    }
-
-    {
-        let mut packet = BytesMut::with_capacity(4);
-        packet.put_slice(tag.as_bytes());
-        if let Err(e) = stream.write_all(&packet.freeze()).await {
-            error!("Error sending initial changes: {:?}", e);
-            return;
+            error!("Error sending tag: {:?}", e);
+            return Err(e); // Propagate the error
         }
     }
 
     for d in data {
         if let Err(e) = stream.write_all(&d).await {
-            error!("Error sending initial changes: {:?}", e);
-            return;
+            error!("Error sending data: {:?}", e);
+            return Err(e); // Propagate the error
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -329,29 +365,27 @@ mod tests {
         let addr: SocketAddr = ([0, 0, 0, 0], 4243).into();
         let (up, fin, shutdown, tx) = mq.start(addr).await.unwrap();
         up.await.unwrap();
-        let msg = Message::new(String::from("xxxx"), vec![Bytes::from("foo")]);
-        tx.send(msg).await;
         let mb = Client::new("local.wavey.io".to_string(), addr, ca_cert);
-        let (mb_up, mb_fin, mb_shutdown, mut rx) = mb.start("HELLO").await.unwrap();
+        let (mb_up, mb_fin, mb_shutdown, mut tx_rx) = mb.start("HELLO").await.unwrap();
         mb_up.await.unwrap();
         sleep(Duration::from_millis(100)).await;
 
-        let test_cases = vec![("abcd", "foo"), ("efgh", "bar"), ("abcd", "baz")];
+        let mut rx = tx_rx.subscribe();
+        let test_cases = vec![(b"abcd", b"foo"), (b"efgh", b"bar"), (b"abcd", b"baz")];
         let payload = rx.try_recv().expect("expected data on channel");
 
-        assert_eq!(payload.tag, String::from("xxxx"), "Tag mismatch");
+        let tag: [u8; 4] = *b"myip";
+        assert_eq!(payload.tag, tag, "Tag mismatch");
 
         for (tag, val) in test_cases.into_iter() {
-            let msg = Message::new(String::from(tag), vec![Bytes::from(val)]);
+            let msg = Message::new(*tag, vec![Bytes::copy_from_slice(val)]);
             tx.send(msg).await;
             sleep(Duration::from_millis(100)).await;
             let payload = rx.try_recv().expect("expected data on channel");
 
-            assert_eq!(payload.ipv4, Ipv4Addr::new(192, 168, 0, 1), "Ipv4 mismatch");
-            assert_eq!(payload.tag, String::from(tag), "Tag mismatch");
-            assert_eq!(payload.val, Bytes::from(val), "Value mismatch");
+            assert_eq!(payload.tag, *tag, "Tag mismatch");
+            assert_eq!(payload.val, Bytes::copy_from_slice(val), "Value mismatch");
         }
-
         mb_shutdown.send(()).unwrap();
         mb_fin.await.unwrap();
 
