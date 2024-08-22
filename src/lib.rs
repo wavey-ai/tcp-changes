@@ -367,11 +367,10 @@ mod tests {
         let (up, fin, shutdown, tx) = mq.start(addr).await.unwrap();
         up.await.unwrap();
         let mb = Client::new("local.wavey.io".to_string(), addr, ca_cert);
-        let (mb_up, mb_fin, mb_shutdown, mut tx_rx) = mb.start("HELLO").await.unwrap();
+        let (mb_up, mb_fin, mb_shutdown, mut rx) = mb.start("HELLO").await.unwrap();
         mb_up.await.unwrap();
         sleep(Duration::from_millis(100)).await;
 
-        let mut rx = tx_rx.subscribe();
         let test_cases = vec![(b"abcd", b"foo"), (b"efgh", b"bar"), (b"abcd", b"baz")];
         let payload = rx.try_recv().expect("expected data on channel");
 
