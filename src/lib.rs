@@ -204,7 +204,8 @@ impl Server {
         let (tx, mut rx) = mpsc::channel::<Message>(16);
         let (btx, _) = broadcast::channel(16);
 
-        let tls_acceptor = tls_acceptor_from_base64(&self.cert_pem, &self.privkey_pem).unwrap();
+        let tls_acceptor =
+            tls_acceptor_from_base64(&self.cert_pem, &self.privkey_pem, false, false).unwrap();
         let incoming = TcpListener::bind(addr).await.unwrap();
         up_tx.send(()).unwrap();
 

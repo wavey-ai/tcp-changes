@@ -12,13 +12,12 @@ async fn run() {
     let addr: SocketAddr = ([0, 0, 0, 0], 4243).into();
     let mb: Client = Client::new("local.wavey.io".to_string(), addr, ca_cert);
 
-    let (up, fin, shutdown, tx) = mb.start("HELLO").await.unwrap();
+    let (up, fin, shutdown, mut rx) = mb.start("HELLO").await.unwrap();
 
-    let mut rx = tx.subscribe();
     up.await.unwrap();
 
     let myip: [u8; 4] = *b"myip";
-    while let Ok(msg) = rx.recv().await {
+    while let Some(msg) = rx.recv().await {
         if msg.tag == myip {
             let ip_bytes: [u8; 4] = msg
                 .val
