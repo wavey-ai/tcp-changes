@@ -4,7 +4,8 @@ use std::net::SocketAddr;
 use tcp_changes::{Client, Payload};
 use tokio::sync::mpsc::{Receiver, Sender};
 
-async fn run() {
+#[tokio::main]
+async fn main() {
     let cert: String = env::var("CERT_PEM").unwrap();
     let privkey: String = env::var("PRIVKEY_PEM").unwrap();
     let ca_cert: String = env::var("FULLCHAIN_PEM").unwrap();
@@ -30,10 +31,4 @@ async fn run() {
             println!("{}", msg);
         }
     }
-}
-
-// Since the main function cannot be async directly, use tokio or async-std runtime to start it
-#[tokio::main]
-async fn main() {
-    run().await;
 }
