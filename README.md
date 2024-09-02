@@ -1,6 +1,6 @@
 ## tcp-changes
 
-Provides a server and client for sending and reading log messages as a tcp stream.
+Provides a server and client for sending and reading log messages as a continuous tcp stream.
 
 With the use of `tcp_changes::log::ChannelLayer` any events logged with `tracing::*` level macros will also be captured and sent to the tcp stream, like a log sink.
 
