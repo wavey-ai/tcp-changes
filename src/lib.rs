@@ -1,3 +1,5 @@
+mod log;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rustls::pki_types::ServerName;
 use std::fmt;
@@ -118,8 +120,6 @@ impl Client {
                         match read_result {
                             Ok(0) => break, // EOF
                             Ok(n) => {
-                                debug!("Read {} bytes", n); // Debug information for the number of bytes read
-
                                 while buffer.len() > 0 {
                                     if current_frame_length.is_none() {
                                         if buffer.len() < 4 {
@@ -247,8 +247,6 @@ impl Server {
 
             fin_tx.send(()).unwrap();
         };
-
-        info!("tcp-changes server listening on {:?}", addr);
 
         tokio::spawn(srv);
 
