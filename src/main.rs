@@ -6,6 +6,14 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 #[tokio::main]
 async fn main() {
+    const ENV_FILE: &str = include_str!("../../io/.env");
+
+    for line in ENV_FILE.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            env::set_var(key.trim(), value.trim());
+        }
+    }
+
     let cert: String = env::var("CERT_PEM").unwrap();
     let privkey: String = env::var("PRIVKEY_PEM").unwrap();
     let ca_cert: String = env::var("FULLCHAIN_PEM").unwrap();
