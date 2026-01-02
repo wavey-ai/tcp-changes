@@ -1,4 +1,8 @@
 mod log;
+pub mod framing;
+
+// Re-export framing utilities for convenience
+pub use framing::{read_frame, write_frame, write_frame_flush, Frame, tags};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rustls::pki_types::ServerName;
