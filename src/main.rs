@@ -1,8 +1,7 @@
 use std::env;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use tcp_changes::{Client, Payload};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tcp_changes::Client;
 
 #[tokio::main]
 async fn main() {
@@ -14,14 +13,12 @@ async fn main() {
         }
     }
 
-    let cert: String = env::var("CERT_PEM").unwrap();
-    let privkey: String = env::var("PRIVKEY_PEM").unwrap();
     let ca_cert: String = env::var("FULLCHAIN_PEM").unwrap();
 
     let addr: SocketAddr = ([0, 0, 0, 0], 4243).into();
     let mb: Client = Client::new("local.wavey.io".to_string(), addr, ca_cert);
 
-    let (up, fin, shutdown, mut rx) = mb.start("HELLO").await.unwrap();
+    let (up, _fin, _shutdown, mut rx) = mb.start("HELLO").await.unwrap();
 
     up.await.unwrap();
 

@@ -1,8 +1,9 @@
-mod log;
 pub mod framing;
+mod log;
 
 // Re-export framing utilities for convenience
-pub use framing::{read_frame, write_frame, write_frame_flush, Frame, tags};
+pub use framing::{read_frame, tags, write_frame, write_frame_flush, Frame};
+pub use log::ChannelLayer;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rustls::pki_types::ServerName;
@@ -10,13 +11,21 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::str;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tls_helpers::{tls_acceptor_from_base64, tls_connector_from_base64};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_rustls::server;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
+
+fn ensure_rustls_provider() {
+    static INSTALL: OnceLock<()> = OnceLock::new();
+    INSTALL.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -35,6 +44,18 @@ impl Message {
                 .unwrap()
                 .as_millis() as u64,
         }
+    }
+
+    pub fn tag(&self) -> [u8; 4] {
+        self.tag
+    }
+
+    pub fn data(&self) -> &[Bytes] {
+        &self.data
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 
     pub async fn send(&self, chan: mpsc::Sender<Message>) {
@@ -94,6 +115,7 @@ impl Client {
         ),
         Box<dyn std::error::Error + Send + Sync>,
     > {
+        ensure_rustls_provider();
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(16);
         let (up_tx, up_rx) = oneshot::channel();
         let (fin_tx, fin_rx) = oneshot::channel();
@@ -110,12 +132,12 @@ impl Client {
         stream.write_all(&cmd.as_bytes()).await?;
 
         let srv = async move {
-            up_tx.send(());
+            let _ = up_tx.send(());
 
             let mut buffer = BytesMut::with_capacity(1024);
             let mut current_frame_length: Option<usize> = None;
 
-            'outer: loop {
+            'read_loop: loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
                         break;
@@ -123,7 +145,7 @@ impl Client {
                     read_result = stream.read_buf(&mut buffer) => {
                         match read_result {
                             Ok(0) => break, // EOF
-                            Ok(n) => {
+                            Ok(_) => {
                                 while buffer.len() > 0 {
                                     if current_frame_length.is_none() {
                                         if buffer.len() < 4 {
@@ -145,9 +167,8 @@ impl Client {
                                                 val: val.freeze(),
                                             };
 
-                                            if let Err(e) = tx_clone.send(pkt).await {
-                                                // this will error if there are no subscribers;
-                                                // error!("Broadcast error: {:?}", e);
+                                            if tx_clone.send(pkt).await.is_err() {
+                                                break 'read_loop;
                                             }
 
                                             current_frame_length = None;
@@ -166,7 +187,7 @@ impl Client {
                 }
             }
 
-            fin_tx.send(()).unwrap();
+            let _ = fin_tx.send(());
         };
 
         tokio::spawn(srv);
@@ -202,6 +223,7 @@ impl Server {
         ),
         Box<dyn std::error::Error + Send + Sync>,
     > {
+        ensure_rustls_provider();
         let (shutdown_tx, mut shutdown_rx) = watch::channel(());
         let (up_tx, up_rx) = oneshot::channel();
         let (fin_tx, fin_rx) = oneshot::channel();
@@ -211,7 +233,7 @@ impl Server {
         let tls_acceptor =
             tls_acceptor_from_base64(&self.cert_pem, &self.privkey_pem, false, false).unwrap();
         let incoming = TcpListener::bind(addr).await.unwrap();
-        up_tx.send(()).unwrap();
+        let _ = up_tx.send(());
 
         let priv_ip = self.priv_ipv4.clone();
         let srv = async move {
@@ -244,12 +266,12 @@ impl Server {
                         break;
                     }
                     Some(message) = rx.recv() => {
-                        btx.send(message);
+                        let _ = btx.send(message);
                     }
                 }
             }
 
-            fin_tx.send(()).unwrap();
+            let _ = fin_tx.send(());
         };
 
         tokio::spawn(srv);
@@ -360,9 +382,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_server() {
-        let cert = env::var("CERT_PEM").unwrap();
-        let privkey = env::var("PRIVKEY_PEM").unwrap();
-        let ca_cert = env::var("FULLCHAIN_PEM").unwrap();
+        let (Ok(cert), Ok(privkey), Ok(ca_cert)) = (
+            env::var("CERT_PEM"),
+            env::var("PRIVKEY_PEM"),
+            env::var("FULLCHAIN_PEM"),
+        ) else {
+            eprintln!("skipping tcp-changes server test; TLS env vars are not set");
+            return;
+        };
 
         let mq = Server::new(cert, privkey, Ipv4Addr::new(192, 168, 0, 1));
         let addr: SocketAddr = ([0, 0, 0, 0], 4243).into();
@@ -381,7 +408,7 @@ mod tests {
 
         for (tag, val) in test_cases.into_iter() {
             let msg = Message::new(*tag, vec![Bytes::copy_from_slice(val)]);
-            tx.send(msg).await;
+            let _ = tx.send(msg).await;
             sleep(Duration::from_millis(100)).await;
             let payload = rx.try_recv().expect("expected data on channel");
 

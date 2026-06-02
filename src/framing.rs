@@ -3,7 +3,7 @@
 //! Wire format: [4 bytes length (big-endian)][4 bytes tag][data]
 //! Length includes the tag (4 bytes) + data length.
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -16,7 +16,10 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(tag: [u8; 4], data: impl Into<Bytes>) -> Self {
-        Self { tag, data: data.into() }
+        Self {
+            tag,
+            data: data.into(),
+        }
     }
 
     /// Check if tag matches a string (for convenience)
@@ -108,16 +111,18 @@ pub mod tags {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::duplex;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+    use tokio::io::duplex;
 
     #[tokio::test]
     async fn test_frame_roundtrip() {
         let (mut client, mut server) = duplex(1024);
 
         // Write a frame
-        write_frame(&mut client, b"TEST", b"hello world").await.unwrap();
+        write_frame(&mut client, b"TEST", b"hello world")
+            .await
+            .unwrap();
 
         // Read it back
         let frame = read_frame(&mut server).await.unwrap().unwrap();
@@ -418,9 +423,9 @@ mod tests {
         // Encode metadata: 16000 Hz, 1 channel, 16 bits, signed (0)
         let mut meta = [0u8; 7];
         meta[0..4].copy_from_slice(&16000u32.to_be_bytes());
-        meta[4] = 1;  // channels
+        meta[4] = 1; // channels
         meta[5] = 16; // bits
-        meta[6] = 0;  // encoding (signed)
+        meta[6] = 0; // encoding (signed)
 
         write_frame(&mut client, tags::META, &meta).await.unwrap();
         drop(client);
@@ -430,11 +435,12 @@ mod tests {
         assert_eq!(frame.data.len(), 7);
 
         // Decode and verify
-        let sample_rate = u32::from_be_bytes([frame.data[0], frame.data[1], frame.data[2], frame.data[3]]);
+        let sample_rate =
+            u32::from_be_bytes([frame.data[0], frame.data[1], frame.data[2], frame.data[3]]);
         assert_eq!(sample_rate, 16000);
-        assert_eq!(frame.data[4], 1);  // channels
+        assert_eq!(frame.data[4], 1); // channels
         assert_eq!(frame.data[5], 16); // bits
-        assert_eq!(frame.data[6], 0);  // encoding
+        assert_eq!(frame.data[6], 0); // encoding
     }
 
     #[tokio::test]
@@ -444,8 +450,8 @@ mod tests {
 
         // Simulate 3 MP3 files concatenated (like the test_tcp_mp3_concatenation test)
         let file_chunks = vec![
-            vec![4096, 4096, 4096, 2000],     // File 1: ~14KB
-            vec![4096, 4096, 4096, 3000],     // File 2: ~15KB
+            vec![4096, 4096, 4096, 2000],       // File 1: ~14KB
+            vec![4096, 4096, 4096, 3000],       // File 2: ~15KB
             vec![4096, 4096, 4096, 4096, 1000], // File 3: ~17KB
         ];
 
@@ -488,8 +494,13 @@ mod tests {
             }
         }
 
-        assert_eq!(received_index, expected_chunks.len(),
-            "Expected {} chunks, received {}", expected_chunks.len(), received_index);
+        assert_eq!(
+            received_index,
+            expected_chunks.len(),
+            "Expected {} chunks, received {}",
+            expected_chunks.len(),
+            received_index
+        );
     }
 
     #[tokio::test]
@@ -527,10 +538,17 @@ mod tests {
                     let received_checksum = hasher.finish();
 
                     let (expected_checksum, expected_size) = sent_checksums[received_index];
-                    assert_eq!(f.data.len(), expected_size,
-                        "Chunk {} size mismatch", received_index);
-                    assert_eq!(received_checksum, expected_checksum,
-                        "Chunk {} checksum mismatch", received_index);
+                    assert_eq!(
+                        f.data.len(),
+                        expected_size,
+                        "Chunk {} size mismatch",
+                        received_index
+                    );
+                    assert_eq!(
+                        received_checksum, expected_checksum,
+                        "Chunk {} checksum mismatch",
+                        received_index
+                    );
 
                     received_index += 1;
                 }
