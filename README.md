@@ -2,7 +2,8 @@
 
 Provides a server and client for sending and reading log messages as a continuous tcp stream.
 
-With the use of `tcp_changes::log::ChannelLayer` any events logged with `tracing::*` level macros will also be captured and sent to the tcp stream, like a log sink.
+Use `tcp_changes::log::ChannelLayer` to capture events from `tracing::*` level
+macros. The layer sends the events to the TCP stream as a log sink.
 
 Although meant for logs you could use it for streaming anything, eg video packets.
 
